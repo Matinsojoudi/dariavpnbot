@@ -131,15 +131,19 @@ def register_seller_traffic_handlers(bot):
             return
 
         title, vol, pt, pu = pkg
-        card_status = _get_bot_setting("PAYMENT_CARD_STATUS")
-        if card_status is None:
-            card_status = '1'
-        crypto_status = _get_bot_setting("PAYMENT_CRYPTO_STATUS")
-        if crypto_status is None:
-            crypto_status = '1'
+        card_status = _get_bot_setting("PAYMENT_CARD_STATUS") or "1"
+        crypto_status = _get_bot_setting("PAYMENT_CRYPTO_STATUS") or "1"
 
-        show_card = (card_status == '1')
-        show_crypto = (crypto_status == '1')
+        # Per-seller override: show_card_for_traffic=0 hides admin card for this seller
+        seller_show_card = 1
+        if cfg is not None and cfg[0] is not None:
+            try:
+                seller_show_card = int(cfg[0])
+            except (TypeError, ValueError):
+                seller_show_card = 1
+
+        show_card = (card_status == "1") and (seller_show_card != 0)
+        show_crypto = crypto_status == "1"
         pt = pt or 0
         pu = pu or 0
 

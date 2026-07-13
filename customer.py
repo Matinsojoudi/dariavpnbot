@@ -5,7 +5,6 @@ from traffic_service import (
     has_enough_traffic,
     block_customer_no_traffic,
     deduct_traffic,
-    force_deduct_traffic,
     refund_traffic,
     check_and_alert_low_traffic,
 )
@@ -24,20 +23,7 @@ def _get_parent_seller_id(chat_id):
 
 
 def _should_check_traffic(seller_id):
-    if not seller_id:
-        return False
-    if (int(seller_id) in settings.admin_list) or (int(seller_id) == int(settings.admin)):
-        return False
-    try:
-        with sqlite3.connect(settings.database) as conn:
-            c = conn.cursor()
-            c.execute("SELECT role FROM users WHERE user_id = ?", (int(seller_id),))
-            r = c.fetchone()
-            if r and r[0] in ["admin", "superadmin"]:
-                return False
-    except:
-        pass
-    return True
+    return not _seller_skips_traffic_quota(seller_id)
 
 
 def _parse_receipt_id(callback_data, prefix):
@@ -50,6 +36,74 @@ def _parse_receipt_id(callback_data, prefix):
         return int(rid)
     except ValueError:
         return None
+
+
+def _is_super_admin_user(user_id):
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return False
+    if uid in settings.admin_list:
+        return True
+    if settings.admin:
+        try:
+            if uid == int(settings.admin):
+                return True
+        except (TypeError, ValueError):
+            pass
+    try:
+        with sqlite3.connect(settings.database) as conn:
+            c = conn.cursor()
+            c.execute("SELECT 1 FROM admin_list WHERE admin_id = ?", (uid,))
+            if c.fetchone():
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _can_manage_receipt(actor_id, seller_id):
+    """Only the owning seller or a super-admin may approve/reject customer receipts."""
+    try:
+        actor = int(actor_id)
+    except (TypeError, ValueError):
+        return False
+    if _is_super_admin_user(actor):
+        return True
+    if seller_id is None:
+        return False
+    try:
+        return actor == int(seller_id)
+    except (TypeError, ValueError):
+        return False
+
+
+def _seller_skips_traffic_quota(seller_id):
+    """True when seller is treated as unlimited (admin owner of panel)."""
+    if not seller_id:
+        return True
+    try:
+        sid = int(seller_id)
+    except (TypeError, ValueError):
+        return False
+    if sid in settings.admin_list:
+        return True
+    if settings.admin:
+        try:
+            if sid == int(settings.admin):
+                return True
+        except (TypeError, ValueError):
+            pass
+    try:
+        with sqlite3.connect(settings.database) as conn:
+            c = conn.cursor()
+            c.execute("SELECT role FROM users WHERE user_id = ?", (sid,))
+            r = c.fetchone()
+            if r and r[0] in ["admin", "superadmin"]:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def _update_receipt_photo(bot, call, receipt_id, status, reason=None, notify_text=None):
@@ -315,6 +369,20 @@ def register_customer_handlers(bot):
                 conn.commit()
                 
             bot.send_message(chat_id, "❌ متأسفانه در ارتباط با سرور برای ساخت سرویس مشکلی پیش آمد.\nمبلغ کسر شده به کیف پول شما بازگشت داده شد.\nلطفاً چند دقیقه دیگر مجدداً تلاش کنید.", parse_mode="HTML")
+
+    @bot.callback_query_handler(func=lambda call: call.data == "charge_wallet")
+    def charge_wallet_callback(call):
+        chat_id = call.message.chat.id
+        from buttons import back_markup
+        bot.answer_callback_query(call.id)
+        msg = bot.send_message(
+            chat_id,
+            "لطفاً مبلغی که می‌خواهید کیف پول خود را شارژ کنید به <b>تومان</b> وارد کنید:\n(مثلا: 50000)",
+            parse_mode="HTML",
+            reply_markup=back_markup,
+        )
+        bot.register_next_step_handler(msg, process_charge_amount, bot)
+
     @bot.callback_query_handler(func=lambda call: call.data.startswith("renew_pkg_"))
     def renew_package(call):
         parts = call.data.split("_")
@@ -413,6 +481,7 @@ def register_customer_handlers(bot):
             
             if _should_check_traffic(parent_id):
                 if not deduct_traffic(parent_id, gb):
+                    c.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (price, chat_id))
                     conn.commit()
                     block_customer_no_traffic(bot, chat_id, parent_id, gb, name)
                     return
@@ -516,6 +585,16 @@ def register_customer_handlers(bot):
             
         card, wallet, active = gw
         
+        if active in ['card', 'both'] and (not card or card in ('تنظیم نشده', 'None')):
+            bot.send_message(chat_id, "❌ فروشنده هنوز شماره کارت خود را تنظیم نکرده است. لطفاً با پشتیبانی تماس بگیرید.")
+            return
+        if active in ['crypto', 'both'] and (not wallet or wallet in ('تنظیم نشده', 'None')):
+            bot.send_message(chat_id, "❌ فروشنده هنوز کیف پول رمزارز خود را تنظیم نکرده است. لطفاً با پشتیبانی تماس بگیرید.")
+            return
+        if active not in ['card', 'crypto', 'both']:
+            bot.send_message(chat_id, "❌ درگاه پرداخت فروشنده تنظیم نشده است.")
+            return
+            
         msg = f"مبلغ قابل پرداخت: <b>{amount} تومان</b>\n\n"
         if active in ['card', 'both']:
             msg += f"💳 شماره کارت جهت واریز:\n<code>{card}</code>\n\n"
@@ -604,6 +683,20 @@ def register_customer_handlers(bot):
         if not receipt_id:
             bot.answer_callback_query(call.id, "رسید نامعتبر است.")
             return
+        with sqlite3.connect(settings.database) as conn:
+            c = conn.cursor()
+            c.execute("SELECT seller_id, status FROM receipts WHERE id = ?", (receipt_id,))
+            row = c.fetchone()
+        if not row:
+            bot.answer_callback_query(call.id, "رسید یافت نشد.", show_alert=True)
+            return
+        seller_id, status = row
+        if not _can_manage_receipt(call.from_user.id, seller_id):
+            bot.answer_callback_query(call.id, "❌ شما مجاز به تأیید این فیش نیستید.", show_alert=True)
+            return
+        if status != "pending":
+            bot.answer_callback_query(call.id, "این فیش قبلاً پردازش شده است.", show_alert=True)
+            return
         markup = InlineKeyboardMarkup()
         markup.row(InlineKeyboardButton("تأیید نهایی ✅", callback_data=f"confirm_receipt_{receipt_id}"))
         try:
@@ -617,6 +710,20 @@ def register_customer_handlers(bot):
         receipt_id = _parse_receipt_id(call.data, "reject_receipt")
         if not receipt_id:
             bot.answer_callback_query(call.id, "رسید نامعتبر است.")
+            return
+        with sqlite3.connect(settings.database) as conn:
+            c = conn.cursor()
+            c.execute("SELECT seller_id, status FROM receipts WHERE id = ?", (receipt_id,))
+            row = c.fetchone()
+        if not row:
+            bot.answer_callback_query(call.id, "رسید یافت نشد.", show_alert=True)
+            return
+        seller_id, status = row
+        if not _can_manage_receipt(call.from_user.id, seller_id):
+            bot.answer_callback_query(call.id, "❌ شما مجاز به رد این فیش نیستید.", show_alert=True)
+            return
+        if status != "pending":
+            bot.answer_callback_query(call.id, "این فیش قبلاً پردازش شده است.", show_alert=True)
             return
         markup = InlineKeyboardMarkup()
         markup.row(InlineKeyboardButton("مبلغ اشتباه", callback_data=f"do_reject_{receipt_id}_wrongamount"))
@@ -652,12 +759,15 @@ def register_customer_handlers(bot):
         try:
             with sqlite3.connect(settings.database) as conn:
                 c = conn.cursor()
-                c.execute("SELECT user_id, status FROM receipts WHERE id = ?", (receipt_id,))
+                c.execute("SELECT user_id, seller_id, status FROM receipts WHERE id = ?", (receipt_id,))
                 row = c.fetchone()
                 if not row:
                     bot.answer_callback_query(call.id, "رسید یافت نشد.", show_alert=True)
                     return
-                user_id, status = row
+                user_id, seller_id, status = row
+                if not _can_manage_receipt(call.from_user.id, seller_id):
+                    bot.answer_callback_query(call.id, "❌ شما مجاز به رد این فیش نیستید.", show_alert=True)
+                    return
                 if status != "pending":
                     bot.answer_callback_query(call.id, "این فیش قبلاً پردازش شده است.", show_alert=True)
                     return
@@ -707,8 +817,21 @@ def register_customer_handlers(bot):
 
                 user_id, seller_id, r_type, pkg_id, amount, status, renew_uuid = row
 
+                if not _can_manage_receipt(call.from_user.id, seller_id):
+                    bot.answer_callback_query(call.id, "❌ شما مجاز به تأیید این فیش نیستید.", show_alert=True)
+                    return
+
+                # Atomic claim to prevent double-approve races
+                c.execute(
+                    "UPDATE receipts SET status = 'approved' WHERE id = ? AND status = 'pending'",
+                    (receipt_id,),
+                )
+                if c.rowcount == 0:
+                    bot.answer_callback_query(call.id, "این فیش قبلاً پردازش شده است.", show_alert=True)
+                    return
+                conn.commit()
+
                 if r_type == "charge":
-                    c.execute("UPDATE receipts SET status = 'approved' WHERE id = ?", (receipt_id,))
                     c.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
                     conn.commit()
                     try:
@@ -720,24 +843,21 @@ def register_customer_handlers(bot):
                     c.execute("SELECT name, gb, days FROM packages WHERE id = ?", (pkg_id,))
                     pkg = c.fetchone()
                     if not pkg:
+                        c.execute("UPDATE receipts SET status = 'pending' WHERE id = ?", (receipt_id,))
+                        conn.commit()
                         bot.answer_callback_query(call.id, "بسته یافت نشد.", show_alert=True)
                         return
 
-                    # Check if seller_id is admin
-                    is_seller_admin = False
-                    if (int(seller_id) in settings.admin_list) or (int(seller_id) == int(settings.admin)):
-                        is_seller_admin = True
-                    else:
-                        c.execute("SELECT role FROM users WHERE user_id = ?", (int(seller_id),))
-                        u_row = c.fetchone()
-                        if u_row and u_row[0] in ["admin", "superadmin"]:
-                            is_seller_admin = True
-
-                    if not is_seller_admin:
-                        force_deduct_traffic(seller_id, pkg[1])
-
-                    c.execute("UPDATE receipts SET status = 'approved' WHERE id = ?", (receipt_id,))
-                    conn.commit()
+                    if _should_check_traffic(seller_id):
+                        if not deduct_traffic(seller_id, pkg[1]):
+                            c.execute("UPDATE receipts SET status = 'pending' WHERE id = ?", (receipt_id,))
+                            conn.commit()
+                            bot.answer_callback_query(
+                                call.id,
+                                "ترافیک فروشنده کافی نیست. ابتدا ترافیک را شارژ کنید.",
+                                show_alert=True,
+                            )
+                            return
 
                     check_and_alert_low_traffic(bot, seller_id)
 
@@ -790,24 +910,22 @@ def register_customer_handlers(bot):
                     c.execute("SELECT name, gb, days FROM packages WHERE id = ?", (pkg_id,))
                     pkg = c.fetchone()
                     if not pkg:
+                        c.execute("UPDATE receipts SET status = 'pending' WHERE id = ?", (receipt_id,))
+                        conn.commit()
                         bot.answer_callback_query(call.id, "بسته یافت نشد.", show_alert=True)
                         return
 
-                    # Check if seller_id is admin
-                    is_seller_admin = False
-                    if (int(seller_id) in settings.admin_list) or (int(seller_id) == int(settings.admin)):
-                        is_seller_admin = True
-                    else:
-                        c.execute("SELECT role FROM users WHERE user_id = ?", (int(seller_id),))
-                        u_row = c.fetchone()
-                        if u_row and u_row[0] in ["admin", "superadmin"]:
-                            is_seller_admin = True
+                    if _should_check_traffic(seller_id):
+                        if not deduct_traffic(seller_id, pkg[1]):
+                            c.execute("UPDATE receipts SET status = 'pending' WHERE id = ?", (receipt_id,))
+                            conn.commit()
+                            bot.answer_callback_query(
+                                call.id,
+                                "ترافیک فروشنده کافی نیست. ابتدا ترافیک را شارژ کنید.",
+                                show_alert=True,
+                            )
+                            return
 
-                    if not is_seller_admin:
-                        force_deduct_traffic(seller_id, pkg[1])
-
-                    c.execute("UPDATE receipts SET status = 'approved' WHERE id = ?", (receipt_id,))
-                    conn.commit()
                     check_and_alert_low_traffic(bot, seller_id)
 
                     from hiddify.client import HiddifyClient
@@ -834,8 +952,7 @@ def register_customer_handlers(bot):
                     send_package_with_qr(bot, user_id, msg_text, sub_link, markup)
 
                 else:
-                    c.execute("UPDATE receipts SET status = 'approved' WHERE id = ?", (receipt_id,))
-                    conn.commit()
+                    pass  # already marked approved
 
             _update_receipt_photo(bot, call, receipt_id, "approved", notify_text="✅ فیش تأیید شد.")
 

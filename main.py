@@ -1407,6 +1407,8 @@ def handle_start(message):
             s_row = c.fetchone()
             target_seller_id = int(s_row[0]) if s_row and s_row[0] else int(settings.admin)
             
+            assigned_seller_id = target_seller_id
+
             # If invite token is supplied, validate it!
             if invite_token:
                 c.execute("SELECT used, seller_id FROM invite_links WHERE token = ?", (invite_token,))
@@ -1418,11 +1420,17 @@ def handle_start(message):
                 if used == 1:
                     bot.send_message(Chat, "❌ این لینک دعوت قبلاً استفاده شده است.")
                     return
-                    
+
+                if inv_seller_id:
+                    assigned_seller_id = int(inv_seller_id)
+
                 # Mark link as used
-                c.execute("UPDATE invite_links SET used = 1, used_by = ? WHERE token = ?", (Chat_id, invite_token))
-                
-                # Notify seller
+                c.execute(
+                    "UPDATE invite_links SET used = 1, used_by = ? WHERE token = ?",
+                    (Chat_id, invite_token),
+                )
+
+                # Notify inviting seller
                 seller_msg = (
                     "👤 <b>کاربر جدید دعوت شده به ربات پیوست!</b>\n"
                     "━━━━━━━━━━━━━━━━━━\n"
@@ -1432,16 +1440,29 @@ def handle_start(message):
                     f"• کد دعوت استفاده شده: <code>{invite_token}</code>"
                 )
                 try:
-                    bot.send_message(target_seller_id, seller_msg, parse_mode="HTML")
+                    bot.send_message(assigned_seller_id, seller_msg, parse_mode="HTML")
                 except Exception as ex:
                     print("Error notifying seller of invite:", ex)
-                    
+
             if is_new:
-                c.execute("INSERT INTO users (chat_id, user_id, parent_seller_id) VALUES (?, ?, ?)", (Chat, Chat_id, target_seller_id))
+                c.execute(
+                    "INSERT INTO users (chat_id, user_id, parent_seller_id) VALUES (?, ?, ?)",
+                    (Chat, Chat_id, assigned_seller_id),
+                )
                 conn.commit()
-                parent_seller_id = target_seller_id
+                parent_seller_id = assigned_seller_id
+            elif invite_token:
+                c.execute(
+                    "UPDATE users SET parent_seller_id = ? WHERE user_id = ?",
+                    (assigned_seller_id, Chat_id),
+                )
+                conn.commit()
+                parent_seller_id = assigned_seller_id
             elif not parent_seller_id:
-                c.execute("UPDATE users SET parent_seller_id = ? WHERE user_id = ?", (target_seller_id, Chat_id))
+                c.execute(
+                    "UPDATE users SET parent_seller_id = ? WHERE user_id = ?",
+                    (target_seller_id, Chat_id),
+                )
                 conn.commit()
                 parent_seller_id = target_seller_id
 
@@ -1779,7 +1800,32 @@ def init_base_db():
             # Check if admin is in seller_configs
             c.execute("SELECT seller_id FROM seller_configs WHERE seller_id = ?", (admin_id,))
             if not c.fetchone():
-                c.execute("INSERT INTO seller_configs (seller_id, total_bulk_gb, used_bulk_gb, nickname) VALUES (?, 999999.0, 0.0, 'مدیریت')", (admin_id,))
+                c.execute(
+                    "INSERT INTO seller_configs (seller_id, total_bulk_gb, used_bulk_gb, nickname, show_card_for_traffic) VALUES (?, 999999.0, 0.0, 'مدیریت', 1)",
+                    (admin_id,),
+                )
+            else:
+                c.execute(
+                    "UPDATE seller_configs SET show_card_for_traffic = COALESCE(show_card_for_traffic, 1) WHERE seller_id = ?",
+                    (admin_id,),
+                )
+
+            # Seed single-seller binding if missing
+            c.execute("SELECT value FROM bot_settings WHERE key = 'SINGLE_SELLER_ID'")
+            if not c.fetchone():
+                c.execute(
+                    "INSERT INTO bot_settings (key, value) VALUES ('SINGLE_SELLER_ID', ?)",
+                    (str(admin_id),),
+                )
+            c.execute("SELECT value FROM bot_settings WHERE key = 'PAYMENT_CARD_STATUS'")
+            if not c.fetchone():
+                c.execute("INSERT INTO bot_settings (key, value) VALUES ('PAYMENT_CARD_STATUS', '1')")
+            c.execute("SELECT value FROM bot_settings WHERE key = 'PAYMENT_CRYPTO_STATUS'")
+            if not c.fetchone():
+                c.execute("INSERT INTO bot_settings (key, value) VALUES ('PAYMENT_CRYPTO_STATUS', '1')")
+            c.execute("SELECT value FROM bot_settings WHERE key = 'SECURITY_MODE'")
+            if not c.fetchone():
+                c.execute("INSERT INTO bot_settings (key, value) VALUES ('SECURITY_MODE', '0')")
             conn.commit()
     except Exception as e:
         print("Error initializing single seller database settings:", e)
@@ -2130,7 +2176,29 @@ def save_new_package(message, title, volume, price_toman):
 
 @bot.message_handler(func=lambda message: message.text == "ورود به پنل فروشنده 🛒")
 def to_seller_panel(message):
-    bot.send_message(message.chat.id, "وارد پنل فروشنده شدید:", reply_markup=get_seller_markup(message.chat.id))
+    chat_id = message.chat.id
+    is_allowed = False
+    if (int(chat_id) in settings.admin_list) or (int(chat_id) in get_admin_ids()):
+        is_allowed = True
+    else:
+        try:
+            with sqlite3.connect(settings.database) as conn:
+                c = conn.cursor()
+                c.execute("SELECT role FROM users WHERE user_id = ?", (chat_id,))
+                row = c.fetchone()
+                if row and row[0] == "seller":
+                    is_allowed = True
+                else:
+                    c.execute("SELECT value FROM bot_settings WHERE key = 'SINGLE_SELLER_ID'")
+                    srow = c.fetchone()
+                    if srow and srow[0] and int(srow[0]) == int(chat_id):
+                        is_allowed = True
+        except Exception:
+            pass
+    if not is_allowed:
+        bot.send_message(chat_id, "❌ شما دسترسی فروشنده ندارید.")
+        return
+    bot.send_message(chat_id, "وارد پنل فروشنده شدید:", reply_markup=get_seller_markup(chat_id))
 
 
 @bot.message_handler(func=lambda message: message.text in ["🛡️ حالت امنیت: فعال", "🛡️ حالت امنیت: غیرفعال"])
@@ -2221,12 +2289,11 @@ def to_customer_panel(message):
 
 @bot.message_handler(func=lambda message: message.text == "برگشت به پنل سوپر ادمین 🔙")
 def to_super_admin_panel(message):
-    bot.send_message(message.chat.id, "وارد پنل سوپر ادمین شدید:", reply_markup=super_admin_markup)
-
-@bot.message_handler(func=lambda message: message.text == "➰ منوی کاربر عادی")
-def handle_normal_menu(message):
-    bot.send_message(message.chat.id, "وارد منوی خریدار شدید.", reply_markup=get_customer_markup(message.chat.id))
-
+    chat_id = message.chat.id
+    if (int(chat_id) in settings.admin_list) or (int(chat_id) in get_admin_ids()):
+        bot.send_message(chat_id, "وارد پنل سوپر ادمین شدید:", reply_markup=super_admin_markup)
+    else:
+        bot.send_message(chat_id, "❌ دسترسی سوپر ادمین ندارید.")
 
 # ========================================================================================================
 # Hiddify Panel Settings Handlers
@@ -2921,122 +2988,6 @@ def process_edit_days(message, user_uuid):
         bot.send_message(chat_id, f"❌ خطا در تغییر زمان کاربر:\n{str(e)}")
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("hiddify_toggle_status_"))
-def handle_toggle_status(call):
-    chat_id = call.message.chat.id
-    if (int(chat_id) in settings.admin_list) or (int(chat_id) in get_admin_ids()):
-        user_uuid = call.data.split("hiddify_toggle_status_")[1]
-        client = HiddifyClient()
-        client.reload_config()
-        try:
-            user = client.get_user(user_uuid)
-            if not user:
-                bot.answer_callback_query(call.id, "کاربر یافت نشد!")
-                return
-            new_enable = not user.get("enable", True)
-            client.update_user(user_uuid, {"enable": new_enable})
-            bot.answer_callback_query(call.id, f"وضعیت کاربر به {'فعال' if new_enable else 'غیرفعال'} تغییر یافت.")
-            # Refresh user info
-            bot.delete_message(chat_id, call.message.message_id)
-            show_user_info(chat_id, user_uuid)
-        except Exception as e:
-            bot.answer_callback_query(call.id, "خطا!")
-            bot.send_message(chat_id, f"❌ خطا در تغییر وضعیت کاربر:\n{str(e)}")
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("hiddify_edit_traffic_"))
-def handle_edit_traffic(call):
-    chat_id = call.message.chat.id
-    if (int(chat_id) in settings.admin_list) or (int(chat_id) in get_admin_ids()):
-        user_uuid = call.data.split("hiddify_edit_traffic_")[1]
-        bot.answer_callback_query(call.id)
-        msg = bot.send_message(
-            chat_id,
-            "لطفاً حجم جدید کاربر را به گیگابایت وارد کنید (مثلاً 50) یا با استفاده از علامت‌های + و - حجم فعلی را تغییر دهید (مثلاً +10 یا -5):"
-        )
-        bot.register_next_step_handler(msg, process_edit_traffic, user_uuid)
-
-
-def process_edit_traffic(message, user_uuid):
-    chat_id = message.chat.id
-    input_text = message.text.strip()
-    client = HiddifyClient()
-    client.reload_config()
-    try:
-        user = client.get_user(user_uuid)
-        if not user:
-            bot.send_message(chat_id, "کاربر یافت نشد.")
-            return
-            
-        current_gb = user.get("usage_limit_GB", 0)
-        
-        # Parse absolute or relative
-        if input_text.startswith("+"):
-            val = float(input_text[1:].strip())
-            new_gb = current_gb + val
-        elif input_text.startswith("-"):
-            val = float(input_text[1:].strip())
-            new_gb = max(0.0, current_gb - val)
-        else:
-            new_gb = float(input_text)
-            
-        client.update_user(user_uuid, {"usage_limit_GB": new_gb})
-        bot.send_message(chat_id, f"✅ حجم کاربر به {new_gb:g} GB تغییر یافت.")
-        show_user_info(chat_id, user_uuid)
-    except ValueError:
-        bot.send_message(chat_id, "❌ مقدار وارد شده نامعتبر است. لطفاً عدد وارد کنید.")
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ خطا در تغییر حجم کاربر:\n{str(e)}")
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("hiddify_edit_days_"))
-def handle_edit_days(call):
-    chat_id = call.message.chat.id
-    if (int(chat_id) in settings.admin_list) or (int(chat_id) in get_admin_ids()):
-        user_uuid = call.data.split("hiddify_edit_days_")[1]
-        bot.answer_callback_query(call.id)
-        msg = bot.send_message(
-            chat_id,
-            "لطفاً تعداد روزهای جدید اعتبار کاربر را وارد کنید (مثلاً 30) یا با استفاده از علامت‌های + و - اعتبار فعلی را تغییر دهید (مثلاً +30 یا -10):"
-        )
-        bot.register_next_step_handler(msg, process_edit_days, user_uuid)
-
-
-def process_edit_days(message, user_uuid):
-    chat_id = message.chat.id
-    input_text = message.text.strip()
-    client = HiddifyClient()
-    client.reload_config()
-    try:
-        user = client.get_user(user_uuid)
-        if not user:
-            bot.send_message(chat_id, "کاربر یافت نشد.")
-            return
-            
-        current_days = user.get("package_days", 0)
-        
-        # Parse absolute or relative
-        if input_text.startswith("+"):
-            val = int(input_text[1:].strip())
-            new_days = current_days + val
-        elif input_text.startswith("-"):
-            val = int(input_text[1:].strip())
-            new_days = max(0, current_days - val)
-        else:
-            new_days = int(input_text)
-            
-        client.update_user(user_uuid, {"package_days": new_days})
-        bot.send_message(chat_id, f"✅ اعتبار کاربر به {new_days} روز تغییر یافت.")
-        show_user_info(chat_id, user_uuid)
-    except ValueError:
-        bot.send_message(chat_id, "❌ مقدار وارد شده نامعتبر است. لطفاً عدد وارد کنید.")
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ خطا در تغییر زمان کاربر:\n{str(e)}")
-
-
-
-
-
 # =========================================================
 # EXTERNAL MODULES (Seller, Customer, Super Admin Sellers)
 # =========================================================
@@ -3054,9 +3005,6 @@ register_customer_handlers(bot)
 
 from seller_manual_config import register_seller_manual_config_handlers
 register_seller_manual_config_handlers(bot)
-
-from seller_traffic import register_seller_traffic_handlers
-register_seller_traffic_handlers(bot)
 
 from seller_traffic import register_seller_traffic_handlers
 register_seller_traffic_handlers(bot)
@@ -3122,7 +3070,7 @@ def call(call):
                                     'contact', 'venue', 'animation'])
 def fallback_non_text(message):
     chat_id = message.chat.id
-    if (int(chat_id) not in settings.admin_list) or (int(chat_id) not in get_admin_ids()):
+    if (int(chat_id) not in settings.admin_list) and (int(chat_id) not in get_admin_ids()):
         bot.send_message(
             message.chat.id,
             text=f"""
@@ -3136,6 +3084,25 @@ def fallback_non_text(message):
         reply_markup=get_customer_markup(message.chat.id),
         disable_web_page_preview=True)
 
+
+
+def send_welcome(message):
+    """Return user to the appropriate home panel after cancel."""
+    chat_id = message.chat.id
+    if (int(chat_id) in settings.admin_list) or (int(chat_id) in get_admin_ids()):
+        bot.send_message(chat_id, "به پنل سوپر ادمین برگشتید.", reply_markup=super_admin_markup)
+        return
+    try:
+        with sqlite3.connect(settings.database) as conn:
+            c = conn.cursor()
+            c.execute("SELECT role FROM users WHERE user_id = ?", (chat_id,))
+            row = c.fetchone()
+            if row and row[0] == "seller":
+                bot.send_message(chat_id, "به پنل فروشنده برگشتید.", reply_markup=get_seller_markup(chat_id))
+                return
+    except Exception:
+        pass
+    bot.send_message(chat_id, "به منوی اصلی برگشتید.", reply_markup=get_customer_markup(chat_id))
 
 
 # =========================================================

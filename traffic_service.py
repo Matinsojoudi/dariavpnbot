@@ -268,7 +268,7 @@ _TABLE_COLUMN_DEFS = {
         "nickname": "TEXT",
         "username_prefix": "TEXT",
         "user_sequence": "INTEGER DEFAULT 1000",
-        "show_card_for_traffic": "INTEGER DEFAULT 0",
+        "show_card_for_traffic": "INTEGER DEFAULT 1",
         "low_traffic_alert_active": "INTEGER DEFAULT 0",
     },
     "packages": {
@@ -294,6 +294,7 @@ _TABLE_COLUMN_DEFS = {
         "token": "TEXT",
         "seller_id": "INTEGER",
         "used": "INTEGER DEFAULT 0",
+        "used_by": "INTEGER",
         "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
     },
     "admin_list": {
@@ -369,7 +370,7 @@ def run_migrations():
                 nickname TEXT,
                 username_prefix TEXT,
                 user_sequence INTEGER DEFAULT 1000,
-                show_card_for_traffic INTEGER DEFAULT 0,
+                show_card_for_traffic INTEGER DEFAULT 1,
                 low_traffic_alert_active INTEGER DEFAULT 0
             );
 
@@ -401,6 +402,7 @@ def run_migrations():
                 token TEXT UNIQUE,
                 seller_id INTEGER,
                 used INTEGER DEFAULT 0,
+                used_by INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -479,7 +481,7 @@ def verify_schema():
         ("receipts", "SELECT id, user_id, seller_id, type, package_id, amount, photo_file_id, service_uuid, status, created_at FROM receipts LIMIT 1"),
         ("seller_packages", "SELECT id, title, volume_gb, price_toman, price_usd FROM seller_packages LIMIT 1"),
         ("admin_wallets", "SELECT id, network, currency, address, is_active FROM admin_wallets LIMIT 1"),
-        ("invite_links", "SELECT token, seller_id, used, created_at FROM invite_links LIMIT 1"),
+        ("invite_links", "SELECT token, seller_id, used, used_by, created_at FROM invite_links LIMIT 1"),
         ("admin_list", "SELECT admin_id, admin_name FROM admin_list LIMIT 1"),
         ("channels", "SELECT button_name, link, channel_id FROM channels LIMIT 1"),
         ("bot_settings", "SELECT key, value FROM bot_settings LIMIT 1"),

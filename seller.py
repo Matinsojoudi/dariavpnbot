@@ -4,17 +4,21 @@ from env import settings
 import traceback
 
 def register_seller_handlers(bot):
-    
-    @bot.message_handler(func=lambda message: message.text == "ورود به پنل فروشنده 🛒")
-    def enter_seller_panel(message):
-        chat_id = message.chat.id
+
+    def _require_seller(chat_id):
         with sqlite3.connect(settings.database) as conn:
             c = conn.cursor()
             c.execute("SELECT role FROM users WHERE user_id = ?", (chat_id,))
             row = c.fetchone()
-            role = row[0] if row else 'customer'
-            
-        if role == 'seller' or (chat_id in settings.admin_list):
+            role = row[0] if row else "customer"
+        if role == "seller" or (chat_id in settings.admin_list):
+            return True
+        return False
+    
+    @bot.message_handler(func=lambda message: message.text == "ورود به پنل فروشنده 🛒")
+    def enter_seller_panel(message):
+        chat_id = message.chat.id
+        if _require_seller(chat_id):
             from buttons import get_seller_markup
             bot.send_message(chat_id, "🛒 <b>به پنل فروشندگان خوش آمدید.</b>\nلطفاً از منوی زیر استفاده کنید:", reply_markup=get_seller_markup(chat_id), parse_mode="HTML")
         else:
@@ -24,6 +28,9 @@ def register_seller_handlers(bot):
     @bot.message_handler(func=lambda message: message.text == "⚙️ تنظیمات پرداخت و فیش")
     def seller_payment_settings(message):
         chat_id = message.chat.id
+        if not _require_seller(chat_id):
+            bot.send_message(chat_id, "❌ شما دسترسی فروشنده ندارید.")
+            return
         
         with sqlite3.connect(settings.database) as conn:
             c = conn.cursor()
