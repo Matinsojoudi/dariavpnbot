@@ -110,6 +110,82 @@ def add_traffic_to_seller(seller_id, gb):
     reset_alert_if_recovered(seller_id)
 
 
+def adjust_seller_total_gb(seller_id, delta_gb):
+    """
+    Increase or decrease seller total_bulk_gb by delta_gb.
+    Decrease never goes below used_bulk_gb (remaining cannot become negative).
+    Returns dict: ok, old_total, new_total, used, remaining, delta_applied, error
+    """
+    delta = float(delta_gb)
+    with _conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            "SELECT total_bulk_gb, used_bulk_gb FROM seller_configs WHERE seller_id = ?",
+            (seller_id,),
+        )
+        row = c.fetchone()
+        if not row:
+            if delta <= 0:
+                return {
+                    "ok": False,
+                    "error": "seller_not_found",
+                    "old_total": 0.0,
+                    "new_total": 0.0,
+                    "used": 0.0,
+                    "remaining": 0.0,
+                    "delta_applied": 0.0,
+                }
+            c.execute(
+                "INSERT INTO seller_configs (seller_id, total_bulk_gb, used_bulk_gb) VALUES (?, ?, 0.0)",
+                (seller_id, delta),
+            )
+            conn.commit()
+            reset_alert_if_recovered(seller_id)
+            return {
+                "ok": True,
+                "error": None,
+                "old_total": 0.0,
+                "new_total": delta,
+                "used": 0.0,
+                "remaining": delta,
+                "delta_applied": delta,
+            }
+
+        old_total = float(row[0] or 0.0)
+        used = float(row[1] or 0.0)
+        new_total = old_total + delta
+        if new_total < used:
+            new_total = used
+        delta_applied = new_total - old_total
+        if abs(delta_applied) < 1e-9 and delta < 0:
+            return {
+                "ok": False,
+                "error": "cannot_decrease_below_used",
+                "old_total": old_total,
+                "new_total": old_total,
+                "used": used,
+                "remaining": max(0.0, old_total - used),
+                "delta_applied": 0.0,
+            }
+        c.execute(
+            "UPDATE seller_configs SET total_bulk_gb = ? WHERE seller_id = ?",
+            (new_total, seller_id),
+        )
+        conn.commit()
+    remaining = max(0.0, new_total - used)
+    if delta_applied > 0:
+        reset_alert_if_recovered(seller_id)
+    return {
+        "ok": True,
+        "error": None,
+        "old_total": old_total,
+        "new_total": new_total,
+        "used": used,
+        "remaining": remaining,
+        "delta_applied": delta_applied,
+    }
+
+
 def reset_alert_if_recovered(seller_id):
     remaining = get_remaining_gb(seller_id)
     if remaining >= LOW_TRAFFIC_THRESHOLD_GB:

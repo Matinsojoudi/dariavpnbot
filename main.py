@@ -3019,6 +3019,9 @@ register_seller_manual_config_handlers(bot)
 from seller_traffic import register_seller_traffic_handlers
 register_seller_traffic_handlers(bot)
 
+from super_admin_seller_traffic import register_super_admin_seller_traffic_handlers
+register_super_admin_seller_traffic_handlers(bot)
+
 def _is_catchall_callback(data):
     return (
         data.startswith("delete_button_")
