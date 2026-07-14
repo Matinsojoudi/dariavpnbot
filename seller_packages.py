@@ -3,6 +3,7 @@
 import sqlite3
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from env import settings
+from seller_context import get_effective_seller_id, can_access_seller_panel
 
 _pending_edit = {}  # chat_id -> {"pkg_id": int, "field": str} or {"create": True, "step": str}
 
@@ -31,13 +32,11 @@ def _send_create_prompt(bot, chat_id, text):
 
 
 def _is_seller(chat_id):
-    if int(chat_id) in settings.admin_list:
-        return True
-    with sqlite3.connect(settings.database) as conn:
-        c = conn.cursor()
-        c.execute("SELECT role FROM users WHERE user_id = ?", (chat_id,))
-        row = c.fetchone()
-    return bool(row and row[0] == "seller")
+    return can_access_seller_panel(chat_id)
+
+
+def _seller_id(actor_id):
+    return get_effective_seller_id(actor_id)
 
 
 def _get_seller_packages(seller_id):
@@ -137,7 +136,7 @@ def _delete_confirm_markup(pkg_id):
 
 
 def _show_list(bot, chat_id, message_id=None):
-    packages = _get_seller_packages(chat_id)
+    packages = _get_seller_packages(_seller_id(chat_id))
     text = _list_message(packages)
     markup = _list_markup(packages)
     if message_id:
@@ -152,7 +151,7 @@ def _show_list(bot, chat_id, message_id=None):
 
 
 def _show_detail(bot, call, pkg_id):
-    pkg = _get_package(pkg_id, call.message.chat.id)
+    pkg = _get_package(pkg_id, _seller_id(call.from_user.id))
     if not pkg:
         bot.answer_callback_query(call.id, "بسته یافت نشد.", show_alert=True)
         return
@@ -215,7 +214,7 @@ def register_seller_package_handlers(bot):
             bot.answer_callback_query(call.id, "دسترسی ندارید.", show_alert=True)
             return
         pkg_id = int(call.data.split("_")[2])
-        pkg = _get_package(pkg_id, call.message.chat.id)
+        pkg = _get_package(pkg_id, _seller_id(call.from_user.id))
         if not pkg:
             bot.answer_callback_query(call.id, "بسته یافت نشد.", show_alert=True)
             return
@@ -244,7 +243,7 @@ def register_seller_package_handlers(bot):
             c = conn.cursor()
             c.execute(
                 "DELETE FROM packages WHERE id = ? AND seller_id = ?",
-                (pkg_id, call.message.chat.id),
+                (pkg_id, _seller_id(call.from_user.id)),
             )
             deleted = c.rowcount
             conn.commit()
@@ -262,7 +261,7 @@ def register_seller_package_handlers(bot):
         parts = call.data.split("_")
         pkg_id = int(parts[2])
         field = parts[3]
-        pkg = _get_package(pkg_id, call.message.chat.id)
+        pkg = _get_package(pkg_id, _seller_id(call.from_user.id))
         if not pkg:
             bot.answer_callback_query(call.id, "بسته یافت نشد.", show_alert=True)
             return
@@ -301,7 +300,7 @@ def register_seller_package_handlers(bot):
             return
         if message.text == "برگشت 🔙":
             bot.send_message(chat_id, "ویرایش لغو شد.", reply_markup=get_seller_markup(chat_id))
-            pkg = _get_package(pending["pkg_id"], chat_id)
+            pkg = _get_package(pending["pkg_id"], _seller_id(chat_id))
             if pkg:
                 bot.send_message(
                     chat_id,
@@ -348,14 +347,14 @@ def register_seller_package_handlers(bot):
             c = conn.cursor()
             c.execute(
                 f"UPDATE packages SET {db_col} = ? WHERE id = ? AND seller_id = ?",
-                (val, pkg_id, chat_id),
+                (val, pkg_id, _seller_id(chat_id)),
             )
             if c.rowcount == 0:
                 bot.send_message(chat_id, "❌ بسته یافت نشد.", reply_markup=get_seller_markup(chat_id))
                 return
             conn.commit()
 
-        pkg = _get_package(pkg_id, chat_id)
+        pkg = _get_package(pkg_id, _seller_id(chat_id))
         field_labels = {"name": "نام", "gb": "حجم", "days": "مدت", "price": "قیمت"}
         bot.send_message(
             chat_id,
@@ -456,12 +455,12 @@ def register_seller_package_handlers(bot):
                     c = conn.cursor()
                     c.execute(
                         "INSERT INTO packages (seller_id, name, gb, days, price_toman, price_usd) VALUES (?, ?, ?, ?, ?, ?)",
-                        (chat_id, state["name"], state["gb"], state["days"], price, 0.0),
+                        (_seller_id(chat_id), state["name"], state["gb"], state["days"], price, 0.0),
                     )
                     new_id = c.lastrowid
                     conn.commit()
                 _pending_edit.pop(chat_id, None)
-                pkg = _get_package(new_id, chat_id)
+                pkg = _get_package(new_id, _seller_id(chat_id))
                 bot.send_message(
                     chat_id,
                     f"✅ بسته <b>{state['name']}</b> با موفقیت ساخته شد!",
@@ -502,7 +501,7 @@ def register_seller_package_handlers(bot):
             bot.answer_callback_query(call.id, "دسترسی ندارید.", show_alert=True)
             return
         pkg_id = int(call.data.split("_")[3])
-        pkg = _get_package(pkg_id, call.message.chat.id)
+        pkg = _get_package(pkg_id, _seller_id(call.from_user.id))
         if not pkg:
             bot.answer_callback_query(call.id, "بسته یافت نشد.", show_alert=True)
             return

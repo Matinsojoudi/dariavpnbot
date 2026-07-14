@@ -4,6 +4,7 @@ import sqlite3
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from env import settings
 from traffic_service import add_traffic_to_seller, check_and_alert_low_traffic
+from seller_context import get_effective_seller_id, can_access_seller_panel
 
 
 def _is_super_admin(chat_id):
@@ -69,14 +70,10 @@ def register_seller_traffic_handlers(bot):
     @bot.message_handler(func=lambda m: m.text == "🔄 تمدید / خرید ترافیک")
     def seller_traffic_menu(message):
         chat_id = message.chat.id
-        with sqlite3.connect(settings.database) as conn:
-            c = conn.cursor()
-            c.execute("SELECT role FROM users WHERE user_id = ?", (chat_id,))
-            row = c.fetchone()
-        role = row[0] if row else "customer"
-        if role != "seller" and chat_id not in settings.admin_list:
+        if not can_access_seller_panel(chat_id):
             bot.send_message(chat_id, "❌ این بخش فقط برای فروشندگان است.")
             return
+        seller_id = get_effective_seller_id(chat_id)
 
         with sqlite3.connect(settings.database) as conn:
             c = conn.cursor()
@@ -112,6 +109,7 @@ def register_seller_traffic_handlers(bot):
     def buy_traffic_select(call):
         pkg_id = int(call.data.split("_")[2])
         chat_id = call.message.chat.id
+        seller_id = get_effective_seller_id(call.from_user.id)
 
         with sqlite3.connect(settings.database) as conn:
             c = conn.cursor()
@@ -122,7 +120,7 @@ def register_seller_traffic_handlers(bot):
             pkg = c.fetchone()
             c.execute(
                 "SELECT show_card_for_traffic FROM seller_configs WHERE seller_id = ?",
-                (chat_id,),
+                (seller_id,),
             )
             cfg = c.fetchone()
 
@@ -208,12 +206,13 @@ def register_seller_traffic_handlers(bot):
 
         photo_id = message.photo[-1].file_id
 
+        seller_id = get_effective_seller_id(chat_id)
         with sqlite3.connect(settings.database) as conn:
             c = conn.cursor()
             c.execute(
                 """INSERT INTO receipts (user_id, seller_id, type, package_id, amount, photo_file_id, status)
                    VALUES (?, 0, 'traffic_purchase', ?, ?, ?, 'pending')""",
-                (chat_id, pkg_id, amount_toman or 0, photo_id),
+                (seller_id, pkg_id, amount_toman or 0, photo_id),
             )
             receipt_id = c.lastrowid
             conn.commit()
@@ -221,13 +220,13 @@ def register_seller_traffic_handlers(bot):
         bot.send_message(
             chat_id,
             "✅ رسید شما ثبت شد و برای تأیید مدیریت ارسال گردید.\n"
-            "پس از تأیید، ترافیک به حساب شما اضافه می‌شود.",
+            "پس از تأیید، ترافیک به حساب فروشنده اضافه می‌شود.",
             reply_markup=get_seller_markup(chat_id),
         )
 
         cap = (
             f"📡 <b>درخواست خرید ترافیک</b>\n\n"
-            f"👤 فروشنده: <code>{chat_id}</code>\n"
+            f"👤 فروشنده: <code>{seller_id}</code>\n"
             f"📦 بسته: <b>{title}</b> ({vol} GB)\n"
             f"💵 مبلغ: {amount_toman:,} تومان\n"
             f"🆔 رسید: #{receipt_id}"

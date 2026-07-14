@@ -1,26 +1,27 @@
 import sqlite3
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from env import settings
+from seller_context import get_effective_seller_id, can_access_seller_panel
 import traceback
 
 def register_seller_handlers(bot):
 
     def _require_seller(chat_id):
-        with sqlite3.connect(settings.database) as conn:
-            c = conn.cursor()
-            c.execute("SELECT role FROM users WHERE user_id = ?", (chat_id,))
-            row = c.fetchone()
-            role = row[0] if row else "customer"
-        if role == "seller" or (chat_id in settings.admin_list):
-            return True
-        return False
+        return can_access_seller_panel(chat_id)
     
     @bot.message_handler(func=lambda message: message.text == "ورود به پنل فروشنده 🛒")
     def enter_seller_panel(message):
         chat_id = message.chat.id
         if _require_seller(chat_id):
             from buttons import get_seller_markup
-            bot.send_message(chat_id, "🛒 <b>به پنل فروشندگان خوش آمدید.</b>\nلطفاً از منوی زیر استفاده کنید:", reply_markup=get_seller_markup(chat_id), parse_mode="HTML")
+            seller_id = get_effective_seller_id(chat_id)
+            note = f"\n👤 فروشنده فعال: <code>{seller_id}</code>" if int(seller_id) != int(chat_id) else ""
+            bot.send_message(
+                chat_id,
+                f"🛒 <b>به پنل فروشندگان خوش آمدید.</b>{note}\nلطفاً از منوی زیر استفاده کنید:",
+                reply_markup=get_seller_markup(chat_id),
+                parse_mode="HTML",
+            )
         else:
             bot.send_message(chat_id, "❌ شما دسترسی فروشنده ندارید.")
 
@@ -32,9 +33,10 @@ def register_seller_handlers(bot):
             bot.send_message(chat_id, "❌ شما دسترسی فروشنده ندارید.")
             return
         
+        seller_id = get_effective_seller_id(chat_id)
         with sqlite3.connect(settings.database) as conn:
             c = conn.cursor()
-            c.execute("SELECT bank_card, crypto_wallet, approval_group_id, active_gateways FROM seller_configs WHERE seller_id = ?", (chat_id,))
+            c.execute("SELECT bank_card, crypto_wallet, approval_group_id, active_gateways FROM seller_configs WHERE seller_id = ?", (seller_id,))
             row = c.fetchone()
             
         if not row:
@@ -42,7 +44,10 @@ def register_seller_handlers(bot):
             
         card, wallet, group, active = row
         
-        msg = f"⚙️ <b>تنظیمات درگاه‌های پرداخت شما:</b>\n\n"
+        msg = f"⚙️ <b>تنظیمات درگاه‌های پرداخت شما:</b>\n"
+        if int(seller_id) != int(chat_id):
+            msg += f"👤 فروشنده فعال: <code>{seller_id}</code>\n"
+        msg += "\n"
         msg += f"💳 شماره کارت: <code>{card}</code>\n"
         msg += f"💰 کیف پول تتر/ترون: <code>{wallet}</code>\n"
         msg += f"👥 آیدی گروه تأیید فیش: <code>{group}</code>\n"
@@ -62,10 +67,11 @@ def register_seller_handlers(bot):
         bot.answer_callback_query(call.id)
         
     def save_seller_card(message, bot):
+        seller_id = get_effective_seller_id(message.chat.id)
         with sqlite3.connect(settings.database) as conn:
             c = conn.cursor()
-            c.execute("INSERT OR IGNORE INTO seller_configs (seller_id) VALUES (?)", (message.chat.id,))
-            c.execute("UPDATE seller_configs SET bank_card = ? WHERE seller_id = ?", (message.text, message.chat.id))
+            c.execute("INSERT OR IGNORE INTO seller_configs (seller_id) VALUES (?)", (seller_id,))
+            c.execute("UPDATE seller_configs SET bank_card = ? WHERE seller_id = ?", (message.text, seller_id))
             conn.commit()
         bot.send_message(message.chat.id, "✅ شماره کارت با موفقیت ذخیره شد.")
 
@@ -76,10 +82,11 @@ def register_seller_handlers(bot):
         bot.answer_callback_query(call.id)
         
     def save_seller_wallet(message, bot):
+        seller_id = get_effective_seller_id(message.chat.id)
         with sqlite3.connect(settings.database) as conn:
             c = conn.cursor()
-            c.execute("INSERT OR IGNORE INTO seller_configs (seller_id) VALUES (?)", (message.chat.id,))
-            c.execute("UPDATE seller_configs SET crypto_wallet = ? WHERE seller_id = ?", (message.text, message.chat.id))
+            c.execute("INSERT OR IGNORE INTO seller_configs (seller_id) VALUES (?)", (seller_id,))
+            c.execute("UPDATE seller_configs SET crypto_wallet = ? WHERE seller_id = ?", (message.text, seller_id))
             conn.commit()
         bot.send_message(message.chat.id, "✅ آدرس ولت با موفقیت ذخیره شد.")
 
@@ -92,10 +99,11 @@ def register_seller_handlers(bot):
     def save_seller_group(message, bot):
         try:
             gid = int(message.text)
+            seller_id = get_effective_seller_id(message.chat.id)
             with sqlite3.connect(settings.database) as conn:
                 c = conn.cursor()
-                c.execute("INSERT OR IGNORE INTO seller_configs (seller_id) VALUES (?)", (message.chat.id,))
-                c.execute("UPDATE seller_configs SET approval_group_id = ? WHERE seller_id = ?", (gid, message.chat.id))
+                c.execute("INSERT OR IGNORE INTO seller_configs (seller_id) VALUES (?)", (seller_id,))
+                c.execute("UPDATE seller_configs SET approval_group_id = ? WHERE seller_id = ?", (gid, seller_id))
                 conn.commit()
             bot.send_message(message.chat.id, "✅ آیدی گروه با موفقیت ثبت شد.")
         except ValueError:
@@ -114,11 +122,12 @@ def register_seller_handlers(bot):
     @bot.callback_query_handler(func=lambda call: call.data.startswith("seller_set_gateway_"))
     def set_active_gateway(call):
         chat_id = call.message.chat.id
+        seller_id = get_effective_seller_id(call.from_user.id)
         gw = call.data.replace("seller_set_gateway_", "")
         with sqlite3.connect(settings.database) as conn:
             c = conn.cursor()
-            c.execute("INSERT OR IGNORE INTO seller_configs (seller_id) VALUES (?)", (chat_id,))
-            c.execute("UPDATE seller_configs SET active_gateways = ? WHERE seller_id = ?", (gw, chat_id))
+            c.execute("INSERT OR IGNORE INTO seller_configs (seller_id) VALUES (?)", (seller_id,))
+            c.execute("UPDATE seller_configs SET active_gateways = ? WHERE seller_id = ?", (gw, seller_id))
             conn.commit()
         bot.send_message(chat_id, f"✅ درگاه فعال به {gw} تغییر یافت.")
         bot.answer_callback_query(call.id, "آپدیت شد.")
@@ -126,26 +135,33 @@ def register_seller_handlers(bot):
     @bot.message_handler(func=lambda message: message.text == "برگشت به پنل فروشنده 🔙")
     def back_to_seller_panel(message):
         chat_id = message.chat.id
-        with sqlite3.connect(settings.database) as conn:
-            c = conn.cursor()
-            c.execute("SELECT role FROM users WHERE user_id = ?", (chat_id,))
-            row = c.fetchone()
-            if row and row[0] == "seller":
-                from buttons import get_seller_markup
-                bot.send_message(chat_id, "به پنل فروشنده برگشتید:", reply_markup=get_seller_markup(chat_id))
-            else:
-                bot.send_message(chat_id, "شما دسترسی فروشنده ندارید.")
+        if can_access_seller_panel(chat_id):
+            from buttons import get_seller_markup
+            seller_id = get_effective_seller_id(chat_id)
+            note = f" (فروشنده <code>{seller_id}</code>)" if int(seller_id) != int(chat_id) else ""
+            bot.send_message(chat_id, f"به پنل فروشنده برگشتید{note}:", reply_markup=get_seller_markup(chat_id), parse_mode="HTML")
+        else:
+            bot.send_message(chat_id, "شما دسترسی فروشنده ندارید.")
 
     @bot.message_handler(func=lambda message: message.text == "🛠 تنظیمات پروفایل من")
     def seller_profile_settings(message):
         chat_id = message.chat.id
+        if not _require_seller(chat_id):
+            bot.send_message(chat_id, "❌ شما دسترسی فروشنده ندارید.")
+            return
+        seller_id = get_effective_seller_id(chat_id)
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("📝 تنظیم لقب فروشگاه", callback_data="seller_prof_nickname"))
         markup.add(InlineKeyboardButton("👤 تنظیم آیدی پشتیبانی", callback_data="seller_prof_support"))
         markup.add(InlineKeyboardButton("📢 تنظیم لینک کانال", callback_data="seller_prof_channel"))
         markup.add(InlineKeyboardButton("📸 تنظیم لینک اینستاگرام", callback_data="seller_prof_instagram"))
-        
-        bot.send_message(chat_id, "🛠 <b>تنظیمات پروفایل شما:</b>\nاز طریق این منو می‌توانید اطلاعاتی که به کاربرانتان نمایش داده می‌شود را سفارشی‌سازی کنید.", reply_markup=markup, parse_mode="HTML")
+        note = f"\n👤 فروشنده فعال: <code>{seller_id}</code>" if int(seller_id) != int(chat_id) else ""
+        bot.send_message(
+            chat_id,
+            f"🛠 <b>تنظیمات پروفایل شما:</b>{note}\nاز طریق این منو می‌توانید اطلاعاتی که به کاربرانتان نمایش داده می‌شود را سفارشی‌سازی کنید.",
+            reply_markup=markup,
+            parse_mode="HTML",
+        )
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("seller_prof_"))
     def edit_seller_profile(call):
@@ -175,10 +191,12 @@ def register_seller_handlers(bot):
             return
             
         val = message.text
+        seller_id = get_effective_seller_id(chat_id)
         with sqlite3.connect(settings.database) as conn:
             c = conn.cursor()
+            c.execute("INSERT OR IGNORE INTO seller_configs (seller_id) VALUES (?)", (seller_id,))
             query = f"UPDATE seller_configs SET {field} = ? WHERE seller_id = ?"
-            c.execute(query, (val, chat_id))
+            c.execute(query, (val, seller_id))
             conn.commit()
             
         bot.send_message(chat_id, "✅ اطلاعات با موفقیت بروزرسانی شد.", reply_markup=get_seller_markup(chat_id))

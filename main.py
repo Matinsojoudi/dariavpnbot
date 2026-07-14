@@ -2198,7 +2198,15 @@ def to_seller_panel(message):
     if not is_allowed:
         bot.send_message(chat_id, "❌ شما دسترسی فروشنده ندارید.")
         return
-    bot.send_message(chat_id, "وارد پنل فروشنده شدید:", reply_markup=get_seller_markup(chat_id))
+    from seller_context import get_effective_seller_id
+    seller_id = get_effective_seller_id(chat_id)
+    note = f"\n👤 فروشنده فعال: <code>{seller_id}</code>" if int(seller_id) != int(chat_id) else ""
+    bot.send_message(
+        chat_id,
+        f"وارد پنل فروشنده شدید:{note}",
+        reply_markup=get_seller_markup(chat_id),
+        parse_mode="HTML",
+    )
 
 
 @bot.message_handler(func=lambda message: message.text in ["🛡️ حالت امنیت: فعال", "🛡️ حالت امنیت: غیرفعال"])
@@ -2267,7 +2275,9 @@ def handle_create_invite_link(message):
     try:
         with sqlite3.connect(settings.database) as conn:
             c = conn.cursor()
-            c.execute("INSERT INTO invite_links (token, seller_id, used) VALUES (?, ?, 0)", (token, chat_id))
+            from seller_context import get_effective_seller_id
+            invite_seller_id = get_effective_seller_id(chat_id)
+            c.execute("INSERT INTO invite_links (token, seller_id, used) VALUES (?, ?, 0)", (token, invite_seller_id))
             conn.commit()
             
         bot_info = bot.get_me()

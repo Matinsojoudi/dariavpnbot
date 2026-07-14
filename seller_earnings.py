@@ -3,6 +3,7 @@
 import sqlite3
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from env import settings
+from seller_context import get_effective_seller_id, can_access_seller_panel
 
 # Receipt types that count as seller revenue from customers
 SALE_TYPES = ("package", "renew", "wallet", "charge")
@@ -101,9 +102,11 @@ def get_seller_earnings(seller_id):
     }
 
 
-def format_earnings_dashboard(seller_id):
+def format_earnings_dashboard(seller_id, actor_id=None):
     data = get_seller_earnings(seller_id)
     msg = "📊 <b>آمار فروش و درآمد شما</b>\n"
+    if actor_id is not None and int(actor_id) != int(seller_id):
+        msg += f"👤 فروشنده فعال: <code>{seller_id}</code>\n"
     msg += "━━━━━━━━━━━━━━━━━━\n\n"
 
     msg += "💰 <b>درآمد کل:</b> "
@@ -181,46 +184,49 @@ def _dashboard_markup():
 
 def register_seller_earnings_handlers(bot):
 
-    def _send_dashboard(chat_id, message_id=None):
-        text = format_earnings_dashboard(chat_id)
+    def _send_dashboard(actor_chat_id, message_id=None):
+        seller_id = get_effective_seller_id(actor_chat_id)
+        text = format_earnings_dashboard(seller_id, actor_id=actor_chat_id)
         markup = _dashboard_markup()
         if message_id:
             try:
                 bot.edit_message_text(
-                    text, chat_id, message_id, reply_markup=markup, parse_mode="HTML"
+                    text, actor_chat_id, message_id, reply_markup=markup, parse_mode="HTML"
                 )
                 return
             except Exception:
                 pass
-        bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
+        bot.send_message(actor_chat_id, text, reply_markup=markup, parse_mode="HTML")
 
     @bot.message_handler(
         func=lambda m: m.text in ("📊 آمار فروش و درآمد", "📊 آمار فروش و حجم")
     )
     def seller_earnings_menu(message):
         chat_id = message.chat.id
-        with sqlite3.connect(settings.database) as conn:
-            c = conn.cursor()
-            c.execute("SELECT role FROM users WHERE user_id = ?", (chat_id,))
-            row = c.fetchone()
-        if not row or row[0] != "seller":
-            if int(chat_id) not in settings.admin_list:
-                bot.send_message(chat_id, "❌ این بخش فقط برای فروشندگان است.")
-                return
+        if not can_access_seller_panel(chat_id):
+            bot.send_message(chat_id, "❌ این بخش فقط برای فروشندگان است.")
+            return
         _send_dashboard(chat_id)
 
     @bot.callback_query_handler(func=lambda c: c.data == "earn_refresh")
     def earn_refresh(call):
+        if not can_access_seller_panel(call.from_user.id):
+            bot.answer_callback_query(call.id, "دسترسی ندارید.", show_alert=True)
+            return
         _send_dashboard(call.message.chat.id, call.message.message_id)
         bot.answer_callback_query(call.id, "بروزرسانی شد")
 
     @bot.callback_query_handler(func=lambda c: c.data == "earn_recent")
     def earn_recent(call):
         chat_id = call.message.chat.id
+        if not can_access_seller_panel(call.from_user.id):
+            bot.answer_callback_query(call.id, "دسترسی ندارید.", show_alert=True)
+            return
+        seller_id = get_effective_seller_id(call.from_user.id)
         markup = InlineKeyboardMarkup()
         markup.row(InlineKeyboardButton("🔙 بازگشت", callback_data="earn_refresh"))
         bot.edit_message_text(
-            format_recent_sales(chat_id),
+            format_recent_sales(seller_id),
             chat_id,
             call.message.message_id,
             reply_markup=markup,
@@ -231,10 +237,14 @@ def register_seller_earnings_handlers(bot):
     @bot.callback_query_handler(func=lambda c: c.data == "earn_packages")
     def earn_packages(call):
         chat_id = call.message.chat.id
+        if not can_access_seller_panel(call.from_user.id):
+            bot.answer_callback_query(call.id, "دسترسی ندارید.", show_alert=True)
+            return
+        seller_id = get_effective_seller_id(call.from_user.id)
         markup = InlineKeyboardMarkup()
         markup.row(InlineKeyboardButton("🔙 بازگشت", callback_data="earn_refresh"))
         bot.edit_message_text(
-            format_package_breakdown(chat_id),
+            format_package_breakdown(seller_id),
             chat_id,
             call.message.message_id,
             reply_markup=markup,

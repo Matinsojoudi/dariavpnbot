@@ -4,6 +4,7 @@ import uuid
 import sqlite3
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from env import settings
+from seller_context import get_effective_seller_id, can_access_seller_panel
 from traffic_service import (
     get_remaining_gb,
     has_enough_traffic,
@@ -16,13 +17,7 @@ _pending_manual = {}
 
 
 def _is_seller(chat_id):
-    if int(chat_id) in settings.admin_list:
-        return True
-    with sqlite3.connect(settings.database) as conn:
-        c = conn.cursor()
-        c.execute("SELECT role FROM users WHERE user_id = ?", (chat_id,))
-        row = c.fetchone()
-    return row and row[0] == "seller"
+    return can_access_seller_panel(chat_id)
 
 
 def _next_username(seller_id):
@@ -66,7 +61,7 @@ def register_seller_manual_config_handlers(bot):
             bot.send_message(chat_id, "❌ این بخش فقط برای فروشندگان است.")
             return
 
-        remaining = get_remaining_gb(chat_id)
+        remaining = get_remaining_gb(get_effective_seller_id(chat_id))
         if remaining <= 0:
             bot.send_message(
                 chat_id,
@@ -125,8 +120,8 @@ def register_seller_manual_config_handlers(bot):
             bot.send_message(chat_id, "❌ حجم نامعتبر است.")
             return
 
-        remaining = get_remaining_gb(chat_id)
-        if not has_enough_traffic(chat_id, gb):
+        remaining = get_remaining_gb(get_effective_seller_id(chat_id))
+        if not has_enough_traffic(get_effective_seller_id(chat_id), gb):
             bot.send_message(
                 chat_id,
                 f"❌ ترافیک کافی ندارید.\nباقیمانده: <b>{remaining:.1f} GB</b> — درخواستی: <b>{gb} GB</b>",
@@ -161,7 +156,7 @@ def register_seller_manual_config_handlers(bot):
             return
 
         display_name = name if name else "(نام خودکار با پیش‌وند شما)"
-        remaining = get_remaining_gb(chat_id)
+        remaining = get_remaining_gb(get_effective_seller_id(chat_id))
 
         markup = InlineKeyboardMarkup()
         markup.row(
@@ -190,7 +185,7 @@ def register_seller_manual_config_handlers(bot):
             bot.send_message(chat_id, "❌ این بخش فقط برای فروشندگان است.")
             return
 
-        rows = _list_manual_configs(chat_id)
+        rows = _list_manual_configs(get_effective_seller_id(chat_id))
         if not rows:
             bot.send_message(chat_id, "شما هنوز کانفیگ دستی نساخته‌اید.")
             return
@@ -256,10 +251,10 @@ def register_seller_manual_config_handlers(bot):
 
         gb = pending["gb"]
         days = pending["days"]
-        user_name = pending["name"] or _next_username(chat_id)
+        user_name = pending["name"] or _next_username(get_effective_seller_id(chat_id))
 
-        if not has_enough_traffic(chat_id, gb):
-            remaining = get_remaining_gb(chat_id)
+        if not has_enough_traffic(get_effective_seller_id(chat_id), gb):
+            remaining = get_remaining_gb(get_effective_seller_id(chat_id))
             bot.answer_callback_query(call.id, "ترافیک کافی نیست!", show_alert=True)
             bot.send_message(
                 chat_id,
@@ -275,11 +270,11 @@ def register_seller_manual_config_handlers(bot):
             c.execute(
                 """INSERT INTO receipts (user_id, seller_id, type, amount, status)
                    VALUES (?, ?, 'seller_manual', 0, 'approved')""",
-                (chat_id, chat_id),
+                (chat_id, get_effective_seller_id(chat_id)),
             )
             receipt_id = c.lastrowid
 
-            if not deduct_traffic(chat_id, gb):
+            if not deduct_traffic(get_effective_seller_id(chat_id), gb):
                 c.execute("DELETE FROM receipts WHERE id = ?", (receipt_id,))
                 conn.commit()
                 bot.send_message(chat_id, "❌ ترافیک کافی نیست.", reply_markup=get_seller_markup(chat_id))
@@ -296,7 +291,7 @@ def register_seller_manual_config_handlers(bot):
                 "uuid": new_uuid,
                 "usage_limit_GB": gb,
                 "package_days": days,
-                "comment": f"Manual by seller {chat_id}",
+                "comment": f"Manual by seller {get_effective_seller_id(chat_id)}",
                 "enable": True,
                 "mode": "no_reset",
             })
@@ -311,7 +306,7 @@ def register_seller_manual_config_handlers(bot):
                 )
                 conn.commit()
 
-            remaining = get_remaining_gb(chat_id)
+            remaining = get_remaining_gb(get_effective_seller_id(chat_id))
             msg_text = (
                 f"✅ <b>کانفیگ با موفقیت ساخته شد!</b>\n\n"
                 f"👤 نام: <code>{user_name}</code>\n"
@@ -332,7 +327,7 @@ def register_seller_manual_config_handlers(bot):
             check_and_alert_low_traffic(bot, chat_id)
 
         except Exception as e:
-            refund_traffic(chat_id, gb)
+            refund_traffic(get_effective_seller_id(chat_id), gb)
             with sqlite3.connect(settings.database) as conn:
                 c = conn.cursor()
                 c.execute("DELETE FROM receipts WHERE id = ?", (receipt_id,))
