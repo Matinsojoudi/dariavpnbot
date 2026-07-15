@@ -45,6 +45,23 @@ cp .env.example .env   # سپس مقادیر را پر کنید
 تنظیمات پنل X-UI در جدول `bot_settings` ذخیره می‌شود (از منوی سوپر ادمین → ⚙️ تنظیمات پنل X-UI):
 `XUI_PANEL_URL`, `XUI_USERNAME`, `XUI_PASSWORD`, `XUI_INBOUND_ID`, `SUB_BASE_URL`
 
+### پنل X-UI پیش‌فرض سرور (mongol / سنایی)
+
+| کلید | مقدار |
+|------|--------|
+| `XUI_PANEL_URL` | `https://mongol.ananasino.icu/mango_banana_4Ever/` |
+| `XUI_USERNAME` | `Matthew` |
+| `XUI_INBOUND_ID` | `1` (Germany) |
+| `SUB_BASE_URL` | `https://sus.ananasino.icu/sus` |
+
+رمز عبور پنل در `/root/x-ui-mongol-install-credentials.txt` روی سرور نگهداری می‌شود.
+
+اعمال/بازنشانی تنظیمات روی دیتابیس:
+
+```bash
+python3 "/root/VPN Bots/scripts/apply-xui-panel-settings.py" dariavpnbot.db
+```
+
 ### اجرا با tmux
 
 ```bash
