@@ -218,15 +218,14 @@ class HiddifyClient:
         if not self.xui:
             self.reload_config()
         if not self.xui:
-            return None
-            
+            raise HiddifyConnectionError("اتصال به پنل X-UI برقرار نیست")
+
         uuid = payload.get("uuid")
         email = payload.get("name")
         enable = payload.get("enable", True)
         total_gb = int(payload.get("usage_limit_GB", 0) * 1024 * 1024 * 1024)
         expire_time = -int(payload.get("package_days", 0) * 24 * 3600 * 1000)
-        
-        # Build comment/telegram_id string
+
         tg_id = payload.get("telegram_id")
         comment = payload.get("comment")
         parts = []
@@ -235,8 +234,9 @@ class HiddifyClient:
         if comment:
             parts.append(comment)
         final_tg_id = " | ".join(parts) if parts else ""
-        
+
         last_res = None
+        errors = []
         for inbound_id in self.inbound_ids:
             try:
                 last_res = self.xui.add_client(
@@ -249,10 +249,21 @@ class HiddifyClient:
                     total_gb=total_gb,
                     expire_time=expire_time,
                     telegram_id=final_tg_id,
-                    subscription_id=uuid
+                    subscription_id=uuid,
                 )
+                if isinstance(last_res, dict) and not last_res.get("success", True):
+                    errors.append(
+                        f"inbound {inbound_id}: {last_res.get('msg', 'خطای نامشخص')}"
+                    )
             except Exception as e:
-                print(f"Error adding client to inbound {inbound_id}: {e}")
+                errors.append(f"inbound {inbound_id}: {e}")
+
+        if errors and not (isinstance(last_res, dict) and last_res.get("success")):
+            raise HiddifyAPIError("; ".join(errors) or "ساخت کاربر روی پنل ناموفق بود")
+
+        if not last_res:
+            raise HiddifyAPIError("پاسخی از پنل X-UI دریافت نشد")
+
         return last_res
 
     def update_user(self, uuid, payload):

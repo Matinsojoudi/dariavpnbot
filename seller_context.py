@@ -59,6 +59,64 @@ def get_effective_seller_id(actor_id):
     return actor
 
 
+def ensure_seller_profile(actor_id):
+    """Ensure configured sellers have role=seller and a seller_configs row."""
+    try:
+        actor = int(actor_id)
+    except (TypeError, ValueError):
+        return
+
+    should_promote = False
+    single = get_single_seller_id()
+    if single and actor == single:
+        should_promote = True
+    else:
+        try:
+            with sqlite3.connect(settings.database) as conn:
+                c = conn.cursor()
+                c.execute("SELECT 1 FROM seller_configs WHERE seller_id = ?", (actor,))
+                if c.fetchone():
+                    should_promote = True
+        except Exception:
+            pass
+
+    if not should_promote:
+        return
+
+    try:
+        with sqlite3.connect(settings.database) as conn:
+            c = conn.cursor()
+            c.execute("SELECT role FROM users WHERE user_id = ?", (actor,))
+            row = c.fetchone()
+            if not row:
+                c.execute(
+                    "INSERT INTO users (chat_id, user_id, role, parent_seller_id) VALUES (?, ?, 'seller', ?)",
+                    (actor, actor, actor),
+                )
+            elif row[0] != "seller":
+                c.execute(
+                    "UPDATE users SET role = 'seller', parent_seller_id = ? WHERE user_id = ?",
+                    (actor, actor),
+                )
+
+            c.execute("SELECT seller_id FROM seller_configs WHERE seller_id = ?", (actor,))
+            if not c.fetchone():
+                c.execute(
+                    "INSERT INTO seller_configs (seller_id, total_bulk_gb, used_bulk_gb) VALUES (?, 0.0, 0.0)",
+                    (actor,),
+                )
+            conn.commit()
+    except Exception:
+        pass
+
+
+def should_show_seller_home(actor_id):
+    """True when /start should open the seller panel (not super-admin home)."""
+    if _is_super_admin(actor_id):
+        return False
+    return can_access_seller_panel(actor_id)
+
+
 def can_access_seller_panel(actor_id):
     """True if actor is a seller or super-admin."""
     try:
@@ -73,6 +131,9 @@ def can_access_seller_panel(actor_id):
             c.execute("SELECT role FROM users WHERE user_id = ?", (actor,))
             row = c.fetchone()
             if row and row[0] == "seller":
+                return True
+            c.execute("SELECT 1 FROM seller_configs WHERE seller_id = ?", (actor,))
+            if c.fetchone():
                 return True
             # Configured single seller may use panel even before role sync
             single = get_single_seller_id()

@@ -12,7 +12,7 @@ CUSTOMER_NO_TRAFFIC_MSG = (
 
 
 def _conn():
-    return sqlite3.connect(settings.database)
+    return sqlite3.connect(settings.database, timeout=30)
 
 
 def get_seller_stats(seller_id):

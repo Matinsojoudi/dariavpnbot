@@ -21,7 +21,7 @@ def _is_seller(chat_id):
 
 
 def _next_username(seller_id):
-    with sqlite3.connect(settings.database) as conn:
+    with sqlite3.connect(settings.database, timeout=30) as conn:
         c = conn.cursor()
         c.execute(
             "SELECT username_prefix, user_sequence FROM seller_configs WHERE seller_id = ?",
@@ -41,7 +41,7 @@ def _next_username(seller_id):
 
 
 def _list_manual_configs(seller_id, limit=15):
-    with sqlite3.connect(settings.database) as conn:
+    with sqlite3.connect(settings.database, timeout=30) as conn:
         c = conn.cursor()
         c.execute(
             """SELECT id, service_uuid, created_at FROM receipts
@@ -238,6 +238,7 @@ def register_seller_manual_config_handlers(bot):
         from buttons import get_seller_markup
         from customer import send_package_with_qr
         from hiddify.client import HiddifyClient
+        from hiddify.exceptions import HiddifyAPIError
 
         chat_id = call.message.chat.id
         if not _is_seller(chat_id):
@@ -251,10 +252,11 @@ def register_seller_manual_config_handlers(bot):
 
         gb = pending["gb"]
         days = pending["days"]
-        user_name = pending["name"] or _next_username(get_effective_seller_id(chat_id))
+        seller_id = get_effective_seller_id(chat_id)
+        user_name = pending["name"] or _next_username(seller_id)
 
-        if not has_enough_traffic(get_effective_seller_id(chat_id), gb):
-            remaining = get_remaining_gb(get_effective_seller_id(chat_id))
+        if not has_enough_traffic(seller_id, gb):
+            remaining = get_remaining_gb(seller_id)
             bot.answer_callback_query(call.id, "ترافیک کافی نیست!", show_alert=True)
             bot.send_message(
                 chat_id,
@@ -265,23 +267,41 @@ def register_seller_manual_config_handlers(bot):
 
         bot.answer_callback_query(call.id, "در حال ساخت کانفیگ...")
 
-        with sqlite3.connect(settings.database) as conn:
-            c = conn.cursor()
-            c.execute(
-                """INSERT INTO receipts (user_id, seller_id, type, amount, status)
-                   VALUES (?, ?, 'seller_manual', 0, 'approved')""",
-                (chat_id, get_effective_seller_id(chat_id)),
-            )
-            receipt_id = c.lastrowid
+        receipt_id = None
+        traffic_deducted = False
 
-            if not deduct_traffic(get_effective_seller_id(chat_id), gb):
-                c.execute("DELETE FROM receipts WHERE id = ?", (receipt_id,))
-                conn.commit()
-                bot.send_message(chat_id, "❌ ترافیک کافی نیست.", reply_markup=get_seller_markup(chat_id))
-                return
-            conn.commit()
+        def _fail_user(message_text):
+            try:
+                bot.edit_message_text(
+                    "❌ ساخت کانفیگ ناموفق بود.",
+                    chat_id,
+                    call.message.message_id,
+                )
+            except Exception:
+                pass
+            bot.send_message(
+                chat_id,
+                message_text,
+                parse_mode="HTML",
+                reply_markup=get_seller_markup(chat_id),
+            )
 
         try:
+            if not deduct_traffic(seller_id, gb):
+                _fail_user("❌ ترافیک کافی نیست یا خطا در کسر حجم رخ داد.")
+                return
+            traffic_deducted = True
+
+            with sqlite3.connect(settings.database, timeout=30) as conn:
+                c = conn.cursor()
+                c.execute(
+                    """INSERT INTO receipts (user_id, seller_id, type, amount, status)
+                       VALUES (?, ?, 'seller_manual', 0, 'approved')""",
+                    (chat_id, seller_id),
+                )
+                receipt_id = c.lastrowid
+                conn.commit()
+
             client = HiddifyClient()
             client.reload_config()
             new_uuid = str(uuid.uuid4())
@@ -291,14 +311,18 @@ def register_seller_manual_config_handlers(bot):
                 "uuid": new_uuid,
                 "usage_limit_GB": gb,
                 "package_days": days,
-                "comment": f"Manual by seller {get_effective_seller_id(chat_id)}",
+                "comment": f"Manual by seller {seller_id}",
                 "enable": True,
                 "mode": "no_reset",
             })
 
+            user_info = client.get_user(new_uuid)
+            if not user_info or not user_info.get("uuid"):
+                raise HiddifyAPIError("کاربر روی پنل ساخته نشد یا قابل بازیابی نیست")
+
             sub_link = client.get_sub_link(new_uuid, user_name)
 
-            with sqlite3.connect(settings.database) as conn:
+            with sqlite3.connect(settings.database, timeout=30) as conn:
                 c = conn.cursor()
                 c.execute(
                     "UPDATE receipts SET service_uuid = ? WHERE id = ?",
@@ -306,7 +330,7 @@ def register_seller_manual_config_handlers(bot):
                 )
                 conn.commit()
 
-            remaining = get_remaining_gb(get_effective_seller_id(chat_id))
+            remaining = get_remaining_gb(seller_id)
             msg_text = (
                 f"✅ <b>کانفیگ با موفقیت ساخته شد!</b>\n\n"
                 f"👤 نام: <code>{user_name}</code>\n"
@@ -318,24 +342,40 @@ def register_seller_manual_config_handlers(bot):
             markup = InlineKeyboardMarkup()
             markup.row(InlineKeyboardButton("🔗 اتصال سریع", url=sub_link))
 
-            bot.edit_message_text(
-                "✅ کانفیگ ساخته شد — در پیام بعدی ارسال می‌شود.",
+            try:
+                bot.delete_message(chat_id, call.message.message_id)
+            except Exception:
+                pass
+            bot.send_message(
                 chat_id,
-                call.message.message_id,
+                "✅ کانفیگ ساخته شد — در پیام بعدی ارسال می‌شود.",
+                reply_markup=get_seller_markup(chat_id),
             )
             send_package_with_qr(bot, chat_id, msg_text, sub_link, markup)
             check_and_alert_low_traffic(bot, chat_id)
 
+        except sqlite3.OperationalError as e:
+            if traffic_deducted:
+                refund_traffic(seller_id, gb)
+            if receipt_id:
+                with sqlite3.connect(settings.database, timeout=30) as conn:
+                    c = conn.cursor()
+                    c.execute("DELETE FROM receipts WHERE id = ?", (receipt_id,))
+                    conn.commit()
+            _fail_user(
+                "❌ خطا در دسترسی به دیتابیس.\n"
+                f"<code>{e}</code>\n"
+                "ترافیک به حساب شما بازگردانده شد. لطفاً چند ثانیه بعد دوباره تلاش کنید."
+            )
         except Exception as e:
-            refund_traffic(get_effective_seller_id(chat_id), gb)
-            with sqlite3.connect(settings.database) as conn:
-                c = conn.cursor()
-                c.execute("DELETE FROM receipts WHERE id = ?", (receipt_id,))
-                conn.commit()
-            bot.send_message(
-                chat_id,
+            if traffic_deducted:
+                refund_traffic(seller_id, gb)
+            if receipt_id:
+                with sqlite3.connect(settings.database, timeout=30) as conn:
+                    c = conn.cursor()
+                    c.execute("DELETE FROM receipts WHERE id = ?", (receipt_id,))
+                    conn.commit()
+            _fail_user(
                 f"❌ خطا در ساخت کانفیگ:\n<code>{e}</code>\n"
-                "ترافیک به حساب شما بازگردانده شد.",
-                parse_mode="HTML",
-                reply_markup=get_seller_markup(chat_id),
+                "ترافیک به حساب شما بازگردانده شد."
             )

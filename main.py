@@ -1334,6 +1334,8 @@ def is_user_blocked_by_security(chat_id, text=None):
     if text and text.startswith("/start inv_"):
         return False
         
+    from seller_context import get_single_seller_id
+    
     # Check database status
     try:
         import sqlite3
@@ -1344,6 +1346,12 @@ def is_user_blocked_by_security(chat_id, text=None):
             if row:
                 if row[0] == "seller":
                     return False
+            c.execute("SELECT 1 FROM seller_configs WHERE seller_id = ?", (int(chat_id),))
+            if c.fetchone():
+                return False
+            single = get_single_seller_id()
+            if single and int(chat_id) == int(single):
+                return False
                     
             # Check if user has ever used a valid invite link
             c.execute("SELECT 1 FROM invite_links WHERE used_by = ?", (int(chat_id),))
@@ -1466,6 +1474,9 @@ def handle_start(message):
                 conn.commit()
                 parent_seller_id = target_seller_id
 
+        from seller_context import ensure_seller_profile, should_show_seller_home
+        ensure_seller_profile(Chat_id)
+
         # Admin Logic
         if (int(Chat_id) in settings.admin_list) or (int(Chat_id) in get_admin_ids()):
             save_info(Chat, first_name, last_name, Chat_id, username)
@@ -1473,7 +1484,7 @@ def handle_start(message):
             return
             
         # Seller Logic
-        if user_role == "seller":
+        if should_show_seller_home(Chat_id):
             save_info(Chat, first_name, last_name, Chat_id, username)
             bot.send_message(Chat_id, text=f"سلام {first_name} عزیز، به پنل فروشندگی خود خوش آمدید! 🛍", reply_markup=get_seller_markup(Chat_id))
             return
@@ -3101,20 +3112,16 @@ def fallback_non_text(message):
 
 def send_welcome(message):
     """Return user to the appropriate home panel after cancel."""
+    from seller_context import ensure_seller_profile, should_show_seller_home
+
     chat_id = message.chat.id
+    ensure_seller_profile(chat_id)
     if (int(chat_id) in settings.admin_list) or (int(chat_id) in get_admin_ids()):
         bot.send_message(chat_id, "به پنل سوپر ادمین برگشتید.", reply_markup=super_admin_markup)
         return
-    try:
-        with sqlite3.connect(settings.database) as conn:
-            c = conn.cursor()
-            c.execute("SELECT role FROM users WHERE user_id = ?", (chat_id,))
-            row = c.fetchone()
-            if row and row[0] == "seller":
-                bot.send_message(chat_id, "به پنل فروشنده برگشتید.", reply_markup=get_seller_markup(chat_id))
-                return
-    except Exception:
-        pass
+    if should_show_seller_home(chat_id):
+        bot.send_message(chat_id, "به پنل فروشنده برگشتید.", reply_markup=get_seller_markup(chat_id))
+        return
     bot.send_message(chat_id, "به منوی اصلی برگشتید.", reply_markup=get_customer_markup(chat_id))
 
 

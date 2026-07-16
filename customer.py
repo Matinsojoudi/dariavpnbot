@@ -106,6 +106,31 @@ def _seller_skips_traffic_quota(seller_id):
     return False
 
 
+def _edit_callback_message(bot, call, text, reply_markup=None, parse_mode="HTML"):
+    """Edit callback source message whether it is a photo (caption) or text."""
+    chat_id = call.message.chat.id
+    message_id = call.message.message_id
+    try:
+        if call.message.photo:
+            bot.edit_message_caption(
+                caption=text,
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode,
+            )
+        else:
+            bot.edit_message_text(
+                text,
+                chat_id,
+                message_id,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode,
+            )
+    except Exception:
+        bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+
+
 def _update_receipt_photo(bot, call, receipt_id, status, reason=None, notify_text=None):
     """Update receipt caption, remove inline keyboard, answer callback."""
     new_cap = generate_receipt_caption(receipt_id, status, reason)
@@ -411,7 +436,7 @@ def register_customer_handlers(bot):
         msg_text += f"⚠️ توجه: با تمدید این سرویس، حجم مصرفی فعلی شما صفر شده و تنظیمات مجددا به ({gb} گیگابایت - {days} روز) تغییر می‌کند.\n\n"
         msg_text += "لطفاً روش پرداخت را انتخاب کنید:"
         
-        bot.edit_message_text(msg_text, chat_id, call.message.message_id, reply_markup=markup, parse_mode="HTML")
+        _edit_callback_message(bot, call, msg_text, reply_markup=markup)
         bot.answer_callback_query(call.id)
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("renew_direct_"))
@@ -518,7 +543,12 @@ def register_customer_handlers(bot):
             markup = InlineKeyboardMarkup()
             markup.row(InlineKeyboardButton("🔗 اتصال سریع", url=sub_link))
             send_package_with_qr(bot, chat_id, msg_text, sub_link, markup)
-            bot.edit_message_caption(caption=f"✅ تمدید سرویس با موفقیت انجام شد.", chat_id=call.message.chat.id, message_id=call.message.message_id)
+            _edit_callback_message(
+                bot,
+                call,
+                f"✅ تمدید سرویس با موفقیت انجام شد.",
+                reply_markup=InlineKeyboardMarkup(),
+            )
         except Exception as e:
             with sqlite3.connect(settings.database) as conn:
                 c = conn.cursor()
