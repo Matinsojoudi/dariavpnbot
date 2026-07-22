@@ -49,10 +49,10 @@ cp .env.example .env   # سپس مقادیر را پر کنید
 
 | کلید | مقدار |
 |------|--------|
-| `XUI_PANEL_URL` | `https://mongol.ananasino.icu/mango_banana_4Ever/` |
+| `XUI_PANEL_URL` | `https://mongol.62.60.184.127.nip.io/mango_banana_4Ever/` |
 | `XUI_USERNAME` | `Matthew` |
 | `XUI_INBOUND_ID` | `1` (Germany) |
-| `SUB_BASE_URL` | `https://sus.ananasino.icu/sus` |
+| `SUB_BASE_URL` | `https://sus.62.60.184.127.nip.io/sus` |
 
 رمز عبور پنل در `/root/x-ui-mongol-install-credentials.txt` روی سرور نگهداری می‌شود.
 

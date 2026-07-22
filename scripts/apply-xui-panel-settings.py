@@ -6,11 +6,11 @@ import sqlite3
 import sys
 
 PANEL_SETTINGS = {
-    "XUI_PANEL_URL": "https://mongol.ananasino.icu/mango_banana_4Ever/",
+    "XUI_PANEL_URL": "https://mongol.62.60.184.127.nip.io/mango_banana_4Ever/",
     "XUI_USERNAME": "Matthew",
     "XUI_PASSWORD": "Matinisthebest4Ever",
     "XUI_INBOUND_ID": "1",
-    "SUB_BASE_URL": "https://sus.ananasino.icu/sus",
+    "SUB_BASE_URL": "https://sus.62.60.184.127.nip.io/sus",
 }
 
 
